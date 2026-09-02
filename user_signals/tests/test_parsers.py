@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from user_signals import sources_appstore, sources_github, sources_playstore  # noqa: E402
+from user_signals import sources_appstore, sources_playstore  # noqa: E402
 
 
 class AppStoreParserTest(unittest.TestCase):
@@ -59,32 +59,6 @@ class PlayStoreParserTest(unittest.TestCase):
 
     def test_skips_malformed_entry(self):
         self.assertIsNone(sources_playstore.parse_entry({"content": "x"}, package_id="p"))
-
-
-class GithubParserTest(unittest.TestCase):
-    def test_parses_issue(self):
-        entry = {
-            "number": 7221,
-            "title": "[P0] Background sync stalls on iOS when screen is off",
-            "body": "Queue backs up past 1000 files.",
-            "html_url": "https://github.com/BasedHardware/omi/issues/7221",
-            "created_at": "2026-06-01T00:00:00Z",
-            "comments": 4,
-            "reactions": {"total_count": 3},
-            "user": {"login": "someuser"},
-        }
-        signal = sources_github.parse_entry(entry)
-        self.assertIsNotNone(signal)
-        self.assertEqual(signal.id, "7221")
-        self.assertEqual(signal.engagement, 7)
-        self.assertIsNone(signal.rating)
-
-    def test_skips_pull_requests(self):
-        entry = {"number": 1, "pull_request": {}, "title": "x", "created_at": "2026-01-01T00:00:00Z", "html_url": "u"}
-        self.assertIsNone(sources_github.parse_entry(entry))
-
-    def test_skips_malformed_entry(self):
-        self.assertIsNone(sources_github.parse_entry({"title": "x"}))
 
 
 if __name__ == "__main__":

@@ -18,7 +18,6 @@ on:
 
 permissions:
   contents: read
-  issues: read
 
 jobs:
   report:
@@ -38,7 +37,6 @@ jobs:
       - name: Run user-signal-report
         id: run
         env:
-          GH_TOKEN: ${{ github.token }}
           PYTHONPATH: ${{ github.workspace }}
         run: |
           python3 -m user_signals.cli \

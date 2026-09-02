@@ -1,44 +1,48 @@
 # omi-user-signal
 
-Fetches recent user feedback for [Omi](https://www.omi.me) (GitHub issues,
-App Store reviews, Google Play reviews), groups it into themes, scores each
-theme with the Priority Score formula from Omi's own
+Fetches recent user feedback for the [Omi](https://www.omi.me) **mobile app**
+— App Store reviews and Google Play reviews, no GitHub — groups it into
+themes, scores each theme with the Priority Score formula from Omi's own
 [`ISSUE_TRIAGE_GUIDE.MD`](./ISSUE_TRIAGE_GUIDE.MD) (copied in — see
 `NOTICE.md`), and writes a ranked report of what's worth fixing, every run.
+
+Scoped to the mobile app on purpose: GitHub's issue tracker covers every Omi
+surface (macOS, backend, firmware) and mixes real user bugs with internal
+engineering/CI/process tickets no end user ever sees. Recent App Store and
+Play Store reviews are direct, unfiltered mobile-app end-user signal —
+that's the only thing this report ranks.
 
 ## Run it
 
 ```bash
 python3 -m pip install -r requirements.txt
-gh auth login          # once, if not already authenticated — GitHub source shells out to `gh`
 bin/user-signal-report # writes out/user-signal-report-<date>.{md,html}, prints the top 5
 ```
 
 Options: `--top N` (default 5), `--lookback-days N` (default 30), `--out-dir DIR`
 (default `out/`, gitignored). Config beyond the flags is env vars, all
-optional: `USER_SIGNALS_GITHUB_REPO` (default `BasedHardware/omi`),
-`USER_SIGNALS_APPSTORE_ID` (default `6502156163`), `USER_SIGNALS_PLAYSTORE_ID`
-(default `com.friend.ios`), `USER_SIGNALS_LOOKBACK_DAYS`,
-`USER_SIGNALS_GITHUB_ISSUE_CAP`, `USER_SIGNALS_REVIEW_CAP`,
+optional: `USER_SIGNALS_APPSTORE_ID` (default `6502156163`),
+`USER_SIGNALS_PLAYSTORE_ID` (default `com.friend.ios`),
+`USER_SIGNALS_LOOKBACK_DAYS`, `USER_SIGNALS_REVIEW_CAP`,
 `USER_SIGNALS_TOP_N`, `USER_SIGNALS_OUT_DIR` — see `user_signals/config.py`.
-Point it at a different repo/app by overriding those three IDs.
+Point it at a different app by overriding the two IDs.
 
 ## How it works
 
 ```
-sources_github.py   ─┐
-sources_appstore.py  ─┼─► Signal (models.py) ─► classify.py ─► score.py ─► report.py
-sources_playstore.py ┘        one normalized      groups into    ranks per       renders
-                               record per item      named themes   ISSUE_TRIAGE_   .md + .html
-                                                                    GUIDE.MD formula
+sources_appstore.py  ─┐
+                       ├─► Signal (models.py) ─► classify.py ─► score.py ─► report.py
+sources_playstore.py ─┘        one normalized      groups into    ranks per       renders
+                                record per item      named themes   ISSUE_TRIAGE_   .md + .html
+                                                                     GUIDE.MD formula
 ```
 
 - **Sources** (`user_signals/sources_*.py`) each expose `fetch(...) -> list[Signal]`
   plus a pure `parse_entry(raw) -> Signal | None` the fetch function calls —
   parsing is unit-tested against fixture payloads, no network involved. No
-  auth needed for App Store (public RSS feed) or Play Store
-  (`google-play-scraper`, reads the same public data the Play Store app
-  shows); GitHub shells out to the `gh` CLI.
+  auth needed for either: App Store is a public RSS feed, Play Store uses
+  `google-play-scraper`, which reads the same public data the Play Store
+  app itself shows.
 - **classify.py** matches each signal's title+body against a small keyword
   taxonomy (`THEMES`) and tags it with a Core Layer — the same
   capture/understand/memory/intelligence/retrieval-action/ux-polish/docs-tooling
@@ -52,15 +56,9 @@ sources_playstore.py ┘        one normalized      groups into    ranks per    
   approximation of the manual rubric, not a replacement for it** — read
   each `_*` function's docstring in `score.py` for exactly which heuristic
   backs which input, and treat a P0/P1 theme as "look at this," not a verdict.
-  Signals are also **source-weighted to a fixed 20/80 split**
-  (`compute_source_weights` in `score.py`): GitHub is solved, per run, to
-  land at exactly 20% of total weighted signal mass; App Store + Play
-  Store combined take the other 80% (split evenly between them, weight
-  1.0 each), regardless of how many issues vs. reviews actually came
-  back. GitHub's open-issues list mixes real user bugs with internal
-  engineering/CI/process tickets that never reach an end user; every
-  store review is direct end-user signal. Change `GITHUB_SHARE` if that
-  target split should move.
+  `Maintenance Leverage` rewards cross-*store* corroboration: a theme both
+  App Store and Play Store users raise independently outranks a one-store
+  complaint.
 - **report.py** renders the same data as Markdown (diffable, git-friendly)
   and a self-contained HTML file (shareable/readable).
 
@@ -71,17 +69,22 @@ sources_playstore.py ┘        one normalized      groups into    ranks per    
   without an LLM call — extend `THEMES` in `user_signals/classify.py` as
   new recurring complaints show up.
 - Apple's review RSS feed caps at ~500 reviews per storefront; Play Store
-  and GitHub pulls are capped by `USER_SIGNALS_REVIEW_CAP` /
-  `USER_SIGNALS_GITHUB_ISSUE_CAP` — this is a snapshot of recent signal,
-  not a full census.
+  pulls are capped by `USER_SIGNALS_REVIEW_CAP` — this is a snapshot of
+  recent signal, not a full census.
+- Out of scope by design, not by omission: GitHub issues, macOS/desktop
+  bugs, backend/firmware tickets. If you want that signal too, run
+  [`ISSUE_TRIAGE_GUIDE.MD`](./ISSUE_TRIAGE_GUIDE.MD)-style triage on the
+  repo directly rather than folding it back into this pipeline.
 
 ## Adding a source
 
 Implement `fetch(...) -> list[Signal]` in a new `user_signals/sources_<name>.py`
 (with a pure `parse_entry()` for testability), then register it in
-`user_signals/cli.py`'s `fetch_all()`. That's the entire integration surface.
+`user_signals/cli.py`'s `fetch_all()`. That's the entire integration surface
+— keep any new source scoped to end-user mobile-app feedback to match the
+rest of this pipeline.
 
-**Discord is a planned 4th source, not yet built** — needs a bot token with
+**Discord is a planned 3rd source, not yet built** — needs a bot token with
 read-only message-history access to the relevant channels. Tracked in
 [BasedHardware/omi#12627](https://github.com/BasedHardware/omi/issues/12627).
 

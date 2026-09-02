@@ -1,5 +1,10 @@
 """Entry point: fetch -> classify -> score -> report.
 
+Scope: mobile app user reviews only — App Store + Play Store. No GitHub;
+those issues cover every Omi surface (macOS, backend, firmware), not just
+the mobile app, and mix in internal engineering/CI tickets no end user
+ever sees. See user_signals/score.py's module docstring.
+
 Run via `bin/user-signal-report` from the repo root, or directly:
     python3 -m user_signals.cli --top 5 --lookback-days 30
 (with the repo root on PYTHONPATH — the wrapper script handles that for you.)
@@ -14,12 +19,12 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import sources_appstore, sources_github, sources_playstore
+from . import sources_appstore, sources_playstore
 from .classify import THEMES, classify
 from .config import Config
 from .models import Signal, ThemeResult
 from .report import render_html, render_markdown
-from .score import compute_source_weights, score_theme
+from .score import score_theme
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -27,7 +32,6 @@ logger = logging.getLogger(__name__)
 
 def fetch_all(config: Config) -> dict[str, list[Signal]]:
     results: dict[str, list[Signal]] = {
-        "github": sources_github.fetch(config.github_repo, config.github_issue_cap),
         "appstore": sources_appstore.fetch(config.appstore_app_id, config.review_cap_per_store),
         "playstore": sources_playstore.fetch(config.playstore_package_id, config.review_cap_per_store),
     }
@@ -36,17 +40,13 @@ def fetch_all(config: Config) -> dict[str, list[Signal]]:
     return results
 
 
-def build_themes(
-    signals: list[Signal], lookback_days: int, source_weight: dict[str, float]
-) -> list[ThemeResult]:
+def build_themes(signals: list[Signal], lookback_days: int) -> list[ThemeResult]:
     grouped: dict[str, list[Signal]] = defaultdict(list)
     for signal in signals:
         for theme_def in classify(signal):
             grouped[theme_def.name].append(signal)
     by_name = {t.name: t for t in THEMES}
-    results = [
-        score_theme(by_name[name], sigs, lookback_days, source_weight) for name, sigs in grouped.items() if sigs
-    ]
+    results = [score_theme(by_name[name], sigs, lookback_days) for name, sigs in grouped.items() if sigs]
     results.sort(key=lambda t: t.score, reverse=True)
     return results
 
@@ -75,11 +75,10 @@ def main(argv: list[str] | None = None) -> int:
     all_signals = [s for sigs in by_source.values() for s in sigs]
 
     if not all_signals:
-        logger.error("No signals fetched from any source — check network/auth (gh auth status) and try again.")
+        logger.error("No signals fetched from either store — check network and try again.")
         return 1
 
-    source_weight = compute_source_weights(all_signals)
-    themes = build_themes(all_signals, lookback_days, source_weight)
+    themes = build_themes(all_signals, lookback_days)
     top_themes = themes[:top_n]
     recent = recent_signals(all_signals, lookback_days)
 
@@ -87,8 +86,8 @@ def main(argv: list[str] | None = None) -> int:
         "generated_at": datetime.now(timezone.utc),
         "lookback_days": lookback_days,
         "source_counts": {k: len(v) for k, v in by_source.items()},
-        "repo": config.github_repo,
-        "source_weight": source_weight,
+        "appstore_app_id": config.appstore_app_id,
+        "playstore_package_id": config.playstore_package_id,
     }
 
     stamp = meta["generated_at"].strftime("%Y-%m-%d")
@@ -99,15 +98,11 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"\nWrote {md_path}")
     print(f"Wrote {html_path}\n")
-    print(
-        f"Source weighting this run: GitHub {source_weight.get('github', 1.0):.2f}x, "
-        f"App Store/Play Store 1.00x (target split: GitHub 20% / stores 80% of weighted signal)\n"
-    )
     print(f"Top {len(top_themes)} priority themes:")
     for i, theme in enumerate(top_themes, start=1):
         print(
             f"  {i}. [{theme.band}] {theme.name} — score {theme.score:.0f}, "
-            f"{len(theme.signals)} signals across {len(theme.source_counts)} source(s)"
+            f"{len(theme.signals)} signals across {len(theme.source_counts)} store(s)"
         )
     if not top_themes:
         print("  (no themes matched any fetched signal — see per-source counts above)")

@@ -18,26 +18,45 @@ from datetime import datetime, timezone
 from .classify import LAYER_WEIGHTS, ThemeDef, has_severity_signal
 from .models import Signal, ThemeResult
 
-# App Store and Play Store reviews are direct, unfiltered end-user signal —
-# every entry is a real person hitting a real problem. GitHub's open-issues
-# list mixes that same kind of report with internal engineering/CI/process
-# tickets that never reach an end user (release guards, formatting checks,
-# refactors), so it's weighted down relative to the stores rather than
-# counted 1:1. Tune here if the mix should shift; "discord" is a placeholder
-# for when that source lands (see README.md).
-SOURCE_WEIGHT: dict[str, float] = {
-    "appstore": 1.5,
-    "playstore": 1.5,
-    "github": 0.5,
-    "discord": 1.0,
-}
+# Per direction: GitHub's open-issues list mixes real user bugs with
+# internal engineering/CI/process tickets that never reach an end user
+# (release guards, formatting checks, refactors) — recent App Store and
+# Play Store reviews are direct, unfiltered end-user signal. Rather than a
+# fixed per-signal multiplier (which doesn't guarantee any particular split
+# once volumes shift), compute_source_weights() solves per run for the
+# GitHub weight that makes GitHub exactly GITHUB_SHARE of total weighted
+# mass — App Store and Play Store together take the rest, split evenly
+# between them at weight 1.0 each. "discord" (not yet a real source, see
+# README.md) stays neutral at 1.0 so it's ready to join the store side
+# without another rebalance.
+GITHUB_SHARE = 0.20  # GitHub's target share of total weighted signal mass; stores get 1 - GITHUB_SHARE.
+STORE_SOURCES = frozenset({"appstore", "playstore"})
 
 
-def _weight(signal: Signal) -> float:
-    return SOURCE_WEIGHT.get(signal.source, 1.0)
+def compute_source_weights(all_signals: list[Signal]) -> dict[str, float]:
+    """Derive per-source weights from one run's actual fetched counts so
+    GitHub lands at exactly GITHUB_SHARE (20%) of total weighted signal
+    mass and App Store + Play Store combined land at the rest (80%),
+    regardless of how many issues vs. reviews came back this time. Falls
+    back to neutral (all 1.0, i.e. no reweighting) if either side is
+    empty — an exact split isn't meaningful with nothing on one side of it."""
+    github_count = sum(1 for s in all_signals if s.source == "github")
+    store_count = sum(1 for s in all_signals if s.source in STORE_SOURCES)
+    weights: dict[str, float] = {"appstore": 1.0, "playstore": 1.0, "discord": 1.0, "github": 1.0}
+    if github_count == 0 or store_count == 0:
+        return weights
+    target_ratio = GITHUB_SHARE / (1 - GITHUB_SHARE)  # store_mass * this = github_mass, at the target split
+    weights["github"] = target_ratio * store_count / github_count
+    return weights
 
 
-def _failure_severity(signals: list[Signal]) -> int:
+def _weight(signal: Signal, source_weight: dict[str, float] | None) -> float:
+    if source_weight is None:
+        return 1.0
+    return source_weight.get(signal.source, 1.0)
+
+
+def _failure_severity(signals: list[Signal], source_weight: dict[str, float] | None) -> int:
     """5 if most (source-weighted) signal carries a severity keyword or a
     <=2-star rating, scaling down from there. A low store rating is the
     strongest unambiguous severity signal available without a human
@@ -45,9 +64,11 @@ def _failure_severity(signals: list[Signal]) -> int:
     match — source weighting is applied on top of that, not instead."""
     if not signals:
         return 1
-    total = sum(_weight(s) for s in signals)
+    total = sum(_weight(s, source_weight) for s in signals)
     bad = sum(
-        _weight(s) for s in signals if has_severity_signal(s) or (s.rating is not None and s.rating <= 2)
+        _weight(s, source_weight)
+        for s in signals
+        if has_severity_signal(s) or (s.rating is not None and s.rating <= 2)
     )
     ratio = bad / total if total else 0
     if ratio >= 0.6:
@@ -61,23 +82,24 @@ def _failure_severity(signals: list[Signal]) -> int:
     return 1
 
 
-def _trust_impact(signals: list[Signal]) -> int:
+def _trust_impact(signals: list[Signal], source_weight: dict[str, float] | None) -> int:
     """5 if any signal reads as data loss / privacy; otherwise tracks
     severity one band down, since most complaints that aren't explicit
     data-loss language still erode trust roughly proportionally."""
     if any(has_severity_signal(s) for s in signals):
         return 5
-    return max(1, _failure_severity(signals) - 1)
+    return max(1, _failure_severity(signals, source_weight) - 1)
 
 
-def _frequency(signals: list[Signal], lookback_days: int) -> int:
+def _frequency(signals: list[Signal], lookback_days: int, source_weight: dict[str, float] | None) -> int:
     """Source-weighted volume within the lookback window, bucketed rather
     than linear so one viral thread doesn't read as "happens daily" on its
-    own. This is the input SOURCE_WEIGHT affects most visibly: ten GitHub
-    issues and ten App Store reviews land in different buckets."""
+    own. This is the input the 20/80 GitHub/store split affects most
+    visibly: at a typical run's volumes, ten GitHub issues and ten App
+    Store reviews land in different buckets."""
     now = datetime.now(timezone.utc)
     recent = [s for s in signals if (now - s.created_at).days <= lookback_days]
-    n = sum(_weight(s) for s in recent)
+    n = sum(_weight(s, source_weight) for s in recent)
     if n >= 15:
         return 5
     if n >= 8:
@@ -128,10 +150,15 @@ def _band(score: float) -> str:
     return "P3"
 
 
-def score_theme(theme_def: ThemeDef, signals: list[Signal], lookback_days: int) -> ThemeResult:
-    severity = _failure_severity(signals)
-    trust = _trust_impact(signals)
-    frequency = _frequency(signals, lookback_days)
+def score_theme(
+    theme_def: ThemeDef,
+    signals: list[Signal],
+    lookback_days: int,
+    source_weight: dict[str, float] | None = None,
+) -> ThemeResult:
+    severity = _failure_severity(signals, source_weight)
+    trust = _trust_impact(signals, source_weight)
+    frequency = _frequency(signals, lookback_days, source_weight)
     leverage = _maintenance_leverage(signals)
     cost = _cost_risk(theme_def.layer)
     weight = LAYER_WEIGHTS[theme_def.layer]

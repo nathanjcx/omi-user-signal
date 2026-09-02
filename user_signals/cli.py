@@ -19,7 +19,7 @@ from .classify import THEMES, classify
 from .config import Config
 from .models import Signal, ThemeResult
 from .report import render_html, render_markdown
-from .score import score_theme
+from .score import compute_source_weights, score_theme
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -36,13 +36,17 @@ def fetch_all(config: Config) -> dict[str, list[Signal]]:
     return results
 
 
-def build_themes(signals: list[Signal], lookback_days: int) -> list[ThemeResult]:
+def build_themes(
+    signals: list[Signal], lookback_days: int, source_weight: dict[str, float]
+) -> list[ThemeResult]:
     grouped: dict[str, list[Signal]] = defaultdict(list)
     for signal in signals:
         for theme_def in classify(signal):
             grouped[theme_def.name].append(signal)
     by_name = {t.name: t for t in THEMES}
-    results = [score_theme(by_name[name], sigs, lookback_days) for name, sigs in grouped.items() if sigs]
+    results = [
+        score_theme(by_name[name], sigs, lookback_days, source_weight) for name, sigs in grouped.items() if sigs
+    ]
     results.sort(key=lambda t: t.score, reverse=True)
     return results
 
@@ -74,7 +78,8 @@ def main(argv: list[str] | None = None) -> int:
         logger.error("No signals fetched from any source — check network/auth (gh auth status) and try again.")
         return 1
 
-    themes = build_themes(all_signals, lookback_days)
+    source_weight = compute_source_weights(all_signals)
+    themes = build_themes(all_signals, lookback_days, source_weight)
     top_themes = themes[:top_n]
     recent = recent_signals(all_signals, lookback_days)
 
@@ -83,6 +88,7 @@ def main(argv: list[str] | None = None) -> int:
         "lookback_days": lookback_days,
         "source_counts": {k: len(v) for k, v in by_source.items()},
         "repo": config.github_repo,
+        "source_weight": source_weight,
     }
 
     stamp = meta["generated_at"].strftime("%Y-%m-%d")
@@ -93,6 +99,10 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"\nWrote {md_path}")
     print(f"Wrote {html_path}\n")
+    print(
+        f"Source weighting this run: GitHub {source_weight.get('github', 1.0):.2f}x, "
+        f"App Store/Play Store 1.00x (target split: GitHub 20% / stores 80% of weighted signal)\n"
+    )
     print(f"Top {len(top_themes)} priority themes:")
     for i, theme in enumerate(top_themes, start=1):
         print(

@@ -36,6 +36,11 @@ def render_markdown(top_themes: list[ThemeResult], recent: list[Signal], meta: d
     )
     counts = ", ".join(f"{SOURCE_LABELS.get(k, k)} {v}" for k, v in meta["source_counts"].items())
     lines.append(f"Source coverage: {counts}")
+    github_weight = meta.get("source_weight", {}).get("github", 1.0)
+    lines.append(
+        f"Source weighting this run: GitHub {github_weight:.2f}x, App Store/Play Store 1.00x "
+        "(target split: GitHub 20% / stores 80% of weighted signal — see `score.py`'s `compute_source_weights`)"
+    )
     lines.append("")
     lines.append(
         "Priority bands (P0-P3) follow the formula in [`ISSUE_TRIAGE_GUIDE.MD`](../ISSUE_TRIAGE_GUIDE.MD) "
@@ -114,6 +119,7 @@ _HTML_TEMPLATE = """<!doctype html>
 <div class="wrap">
   <h1>Omi User Signal Report</h1>
   <div class="meta">Generated {generated} &middot; lookback {lookback_days}d &middot; repo <code>{repo}</code> &middot; coverage: {coverage}</div>
+  <div class="meta">Source weighting: GitHub {github_weight:.2f}x, App Store/Play Store 1.00x (target split: GitHub 20% / stores 80%)</div>
 
   <h2>Top {n} Priority Themes</h2>
   {themes_html}
@@ -149,6 +155,7 @@ def _theme_html(i: int, theme: ThemeResult) -> str:
 def render_html(top_themes: list[ThemeResult], recent: list[Signal], meta: dict) -> str:
     generated = meta["generated_at"].strftime("%Y-%m-%d %H:%M UTC")
     coverage = ", ".join(f"{SOURCE_LABELS.get(k, k)} {v}" for k, v in meta["source_counts"].items())
+    github_weight = meta.get("source_weight", {}).get("github", 1.0)
     themes_html = "".join(_theme_html(i, t) for i, t in enumerate(top_themes, start=1)) or "<p>No themes matched.</p>"
 
     if recent:
@@ -168,6 +175,7 @@ def render_html(top_themes: list[ThemeResult], recent: list[Signal], meta: dict)
         lookback_days=meta["lookback_days"],
         repo=html_lib.escape(meta["repo"]),
         coverage=coverage,
+        github_weight=github_weight,
         n=len(top_themes),
         themes_html=themes_html,
         recent_html=recent_html,

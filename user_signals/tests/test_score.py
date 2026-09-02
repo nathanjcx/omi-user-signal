@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from user_signals.classify import THEMES  # noqa: E402
 from user_signals.models import Signal  # noqa: E402
-from user_signals.score import _band, _frequency, score_theme  # noqa: E402
+from user_signals.score import _band, _frequency, compute_source_weights, score_theme  # noqa: E402
 
 BLUETOOTH_THEME = next(t for t in THEMES if t.name == "Bluetooth / connectivity")
 ONBOARDING_THEME = next(t for t in THEMES if t.name == "Onboarding & setup")
@@ -66,15 +66,36 @@ class ScoreThemeTest(unittest.TestCase):
 
 
 class SourceWeightingTest(unittest.TestCase):
-    """App Store and Play Store reviews count for more than GitHub issues —
-    per user direction, GitHub's issue list mixes real user bugs with
-    internal engineering/CI tickets that never reach an end user."""
+    """Per user direction: GitHub should land at exactly 20% of total
+    weighted signal mass, App Store + Play Store combined at 80% —
+    GitHub's issue list mixes real user bugs with internal engineering/CI
+    tickets that never reach an end user; recent store reviews don't."""
+
+    def test_computed_weights_hit_the_20_80_split(self):
+        signals = (
+            [make_signal("github", d, body="") for d in range(8)]
+            + [make_signal("appstore", d, body="") for d in range(3)]
+            + [make_signal("playstore", d, body="") for d in range(9)]
+        )
+        weights = compute_source_weights(signals)
+        github_mass = sum(weights[s.source] for s in signals if s.source == "github")
+        store_mass = sum(weights[s.source] for s in signals if s.source in ("appstore", "playstore"))
+        total = github_mass + store_mass
+        self.assertAlmostEqual(github_mass / total, 0.20, places=6)
+        self.assertAlmostEqual(store_mass / total, 0.80, places=6)
+
+    def test_falls_back_to_neutral_when_one_side_is_empty(self):
+        github_only = [make_signal("github", d, body="") for d in range(5)]
+        weights = compute_source_weights(github_only)
+        self.assertEqual(weights["github"], 1.0)
+        self.assertEqual(compute_source_weights([]), compute_source_weights(github_only))
 
     def test_appstore_outweighs_equal_count_of_github(self):
         github_signals = [make_signal("github", d, body="") for d in range(10)]
         appstore_signals = [make_signal("appstore", d, body="") for d in range(10)]
-        github_freq = _frequency(github_signals, lookback_days=30)
-        appstore_freq = _frequency(appstore_signals, lookback_days=30)
+        weights = compute_source_weights(github_signals + appstore_signals)
+        github_freq = _frequency(github_signals, lookback_days=30, source_weight=weights)
+        appstore_freq = _frequency(appstore_signals, lookback_days=30, source_weight=weights)
         self.assertLess(github_freq, appstore_freq)
 
     def test_appstore_and_playstore_theme_outscores_same_size_github_only_theme(self):
@@ -82,8 +103,9 @@ class SourceWeightingTest(unittest.TestCase):
         stores_only = [make_signal("appstore", d, body="") for d in range(5)] + [
             make_signal("playstore", d, body="") for d in range(5)
         ]
-        github_result = score_theme(BLUETOOTH_THEME, github_only, lookback_days=30)
-        stores_result = score_theme(BLUETOOTH_THEME, stores_only, lookback_days=30)
+        weights = compute_source_weights(github_only + stores_only)
+        github_result = score_theme(BLUETOOTH_THEME, github_only, lookback_days=30, source_weight=weights)
+        stores_result = score_theme(BLUETOOTH_THEME, stores_only, lookback_days=30, source_weight=weights)
         self.assertGreater(stores_result.score, github_result.score)
 
 

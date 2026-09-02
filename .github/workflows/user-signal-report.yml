@@ -1,0 +1,61 @@
+name: User Signal Report
+
+on:
+  schedule:
+    # 06:00 UTC daily. GitHub may delay scheduled runs under load; that's
+    # fine for a report this doesn't gate anything on.
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+    inputs:
+      top:
+        description: 'Number of priority themes to report'
+        required: false
+        default: '5'
+      lookback_days:
+        description: 'Lookback window in days'
+        required: false
+        default: '30'
+
+permissions:
+  contents: read
+  issues: read
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: python3 -m pip install -q -r requirements.txt
+
+      - name: Run user-signal-report
+        id: run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python3 -m user_signals.cli \
+            --top "${{ github.event.inputs.top || '5' }}" \
+            --lookback-days "${{ github.event.inputs.lookback_days || '30' }}"
+          stamp=$(date -u +%Y-%m-%d)
+          echo "md_path=out/user-signal-report-${stamp}.md" >> "$GITHUB_OUTPUT"
+          echo "html_path=out/user-signal-report-${stamp}.html" >> "$GITHUB_OUTPUT"
+
+      - name: Add report to step summary
+        run: cat "${{ steps.run.outputs.md_path }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload report artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: user-signal-report-${{ github.run_id }}
+          path: |
+            ${{ steps.run.outputs.md_path }}
+            ${{ steps.run.outputs.html_path }}
+          retention-days: 90

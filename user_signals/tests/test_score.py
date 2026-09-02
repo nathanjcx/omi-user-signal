@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from user_signals.classify import THEMES  # noqa: E402
 from user_signals.models import Signal  # noqa: E402
-from user_signals.score import _band, score_theme  # noqa: E402
+from user_signals.score import _band, _frequency, score_theme  # noqa: E402
 
 BLUETOOTH_THEME = next(t for t in THEMES if t.name == "Bluetooth / connectivity")
 ONBOARDING_THEME = next(t for t in THEMES if t.name == "Onboarding & setup")
@@ -63,6 +63,28 @@ class ScoreThemeTest(unittest.TestCase):
         result = score_theme(BLUETOOTH_THEME, [], lookback_days=30)
         self.assertEqual(result.band, "P3")
         self.assertEqual(len(result.signals), 0)
+
+
+class SourceWeightingTest(unittest.TestCase):
+    """App Store and Play Store reviews count for more than GitHub issues —
+    per user direction, GitHub's issue list mixes real user bugs with
+    internal engineering/CI tickets that never reach an end user."""
+
+    def test_appstore_outweighs_equal_count_of_github(self):
+        github_signals = [make_signal("github", d, body="") for d in range(10)]
+        appstore_signals = [make_signal("appstore", d, body="") for d in range(10)]
+        github_freq = _frequency(github_signals, lookback_days=30)
+        appstore_freq = _frequency(appstore_signals, lookback_days=30)
+        self.assertLess(github_freq, appstore_freq)
+
+    def test_appstore_and_playstore_theme_outscores_same_size_github_only_theme(self):
+        github_only = [make_signal("github", d, body="") for d in range(10)]
+        stores_only = [make_signal("appstore", d, body="") for d in range(5)] + [
+            make_signal("playstore", d, body="") for d in range(5)
+        ]
+        github_result = score_theme(BLUETOOTH_THEME, github_only, lookback_days=30)
+        stores_result = score_theme(BLUETOOTH_THEME, stores_only, lookback_days=30)
+        self.assertGreater(stores_result.score, github_result.score)
 
 
 if __name__ == "__main__":

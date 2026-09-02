@@ -18,16 +18,38 @@ from datetime import datetime, timezone
 from .classify import LAYER_WEIGHTS, ThemeDef, has_severity_signal
 from .models import Signal, ThemeResult
 
+# App Store and Play Store reviews are direct, unfiltered end-user signal —
+# every entry is a real person hitting a real problem. GitHub's open-issues
+# list mixes that same kind of report with internal engineering/CI/process
+# tickets that never reach an end user (release guards, formatting checks,
+# refactors), so it's weighted down relative to the stores rather than
+# counted 1:1. Tune here if the mix should shift; "discord" is a placeholder
+# for when that source lands (see README.md).
+SOURCE_WEIGHT: dict[str, float] = {
+    "appstore": 1.5,
+    "playstore": 1.5,
+    "github": 0.5,
+    "discord": 1.0,
+}
+
+
+def _weight(signal: Signal) -> float:
+    return SOURCE_WEIGHT.get(signal.source, 1.0)
+
 
 def _failure_severity(signals: list[Signal]) -> int:
-    """5 if most signals carry a severity keyword or a <=2-star rating,
-    scaling down from there. A low store rating is the strongest
-    unambiguous severity signal available without a human reading every
-    review, so it's weighted equally with the keyword match."""
+    """5 if most (source-weighted) signal carries a severity keyword or a
+    <=2-star rating, scaling down from there. A low store rating is the
+    strongest unambiguous severity signal available without a human
+    reading every review, so it's weighted equally with the keyword
+    match — source weighting is applied on top of that, not instead."""
     if not signals:
         return 1
-    bad = sum(1 for s in signals if has_severity_signal(s) or (s.rating is not None and s.rating <= 2))
-    ratio = bad / len(signals)
+    total = sum(_weight(s) for s in signals)
+    bad = sum(
+        _weight(s) for s in signals if has_severity_signal(s) or (s.rating is not None and s.rating <= 2)
+    )
+    ratio = bad / total if total else 0
     if ratio >= 0.6:
         return 5
     if ratio >= 0.4:
@@ -49,18 +71,20 @@ def _trust_impact(signals: list[Signal]) -> int:
 
 
 def _frequency(signals: list[Signal], lookback_days: int) -> int:
-    """Volume within the lookback window, bucketed rather than linear so
-    one viral thread doesn't read as "happens daily" on its own."""
+    """Source-weighted volume within the lookback window, bucketed rather
+    than linear so one viral thread doesn't read as "happens daily" on its
+    own. This is the input SOURCE_WEIGHT affects most visibly: ten GitHub
+    issues and ten App Store reviews land in different buckets."""
     now = datetime.now(timezone.utc)
     recent = [s for s in signals if (now - s.created_at).days <= lookback_days]
-    n = len(recent)
+    n = sum(_weight(s) for s in recent)
     if n >= 15:
         return 5
     if n >= 8:
         return 4
     if n >= 4:
         return 3
-    if n >= 1:
+    if n > 0:
         return 2
     return 1
 

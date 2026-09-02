@@ -52,6 +52,11 @@ sources_playstore.py ┘        one normalized      groups into    ranks per    
   approximation of the manual rubric, not a replacement for it** — read
   each `_*` function's docstring in `score.py` for exactly which heuristic
   backs which input, and treat a P0/P1 theme as "look at this," not a verdict.
+  Signals are also **source-weighted** (`SOURCE_WEIGHT` in `score.py`):
+  App Store and Play Store reviews count 1.5×, GitHub issues count 0.5×,
+  since GitHub's open-issues list mixes real user bugs with internal
+  engineering/CI/process tickets that never reach an end user, while every
+  store review is direct end-user signal. Tune the dict if that mix should shift.
 - **report.py** renders the same data as Markdown (diffable, git-friendly)
   and a self-contained HTML file (shareable/readable).
 

@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Regression test for bin/user-signal-report's ROOT resolution.
+#
+# `git rev-parse --show-toplevel 2>/dev/null || cd ... && pwd` parses as
+# `(A || B) && C`, not `A || (B && C)` — so when A (git rev-parse) succeeds,
+# C (pwd) still runs afterward and its output gets appended into the same
+# command substitution, leaving ROOT as two newline-joined copies of the
+# path and breaking `cd "$ROOT"`. This caught that live on the first real
+# run of this repo. Run from repo root: bin/test-wrapper
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+
+resolved="$(
+  if ! r="$(git rev-parse --show-toplevel 2>/dev/null)"; then
+    r="$(cd "$(dirname "$0")/.." && pwd)"
+  fi
+  printf '%s' "$r"
+)"
+
+line_count="$(printf '%s' "$resolved" | wc -l | tr -d ' ')"
+if [ "$resolved" != "$ROOT" ] || [ "$line_count" != "0" ]; then
+  echo "FAIL: ROOT resolution inside a git repo must be exactly one line matching '$ROOT', got: $resolved" >&2
+  exit 1
+fi
+echo "PASS: ROOT resolves to a single path inside a git repo"
